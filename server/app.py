@@ -9,7 +9,7 @@ import wget
 import requests
 import json
 import datetime
-
+import paramiko
 # configuration
 DEBUG = True
 
@@ -107,15 +107,14 @@ class Report(Resource):
         Thread(target=scan).start()
         ret = {'code': 20000, 'data': 'shit'}
         return jsonify(ret)
+
     def get(self):
         # reportId=request.args.get('reportId')
         global scanqueue
-        ret={'code':20000,'data':{'scanCompleted':False}}
+        ret = {'code': 20000, 'data': {'scanCompleted': False}}
         if not scanqueue:
-           ret['data']['scanCompleted']=True
+            ret['data']['scanCompleted'] = True
         return jsonify(ret)
-
-
 
 
 api.add_resource(User, '/user/login')
@@ -151,12 +150,21 @@ def ping_pong():
     return jsonify('pong!')
 
 
+@app.route('/docker', methods=['GET'])
+def getImages():
+    response = requests.get(
+        'https://hub.docker.com/api/content/v1/products/search?source=community&q=mysq&page=1&page_size=4')
+    json_data = response.json()
+    return jsonify({'code': 20000, 'data': json_data})
+
+
 @app.route('/auth/<provider>', methods=['OPTIONS', 'POST'])
 def login(provider):
     if request.method == 'OPTIONS':
         return jsonify('shit')
-    headers = {'Accept': 'application/json'}
+    headers = {'Accept': 'application/json'}  # Set Request Header
     post_data = json.loads(request.data)
+    # Fill in client_secret code
     post_data['client_secret'] = "4f65f9b418a36c9e62221ea91a2f5d54d1667174"
     if post_data['redirectUri']:
         del post_data['redirectUri']
@@ -164,7 +172,7 @@ def login(provider):
         post_data['client_id'] = post_data['clientId']
         del post_data['clientId']
     response = requests.post(
-        'https://github.com/login/oauth/access_token', headers=headers, params=post_data)
+        'https://github.com/login/oauth/access_token', headers=headers, params=post_data)  # Fetch access token
     json_data = response.json()
     return jsonify(json_data)
 
