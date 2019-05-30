@@ -9,7 +9,7 @@ import wget
 import requests
 import json
 import datetime
-import paramiko
+import boto3
 # configuration
 DEBUG = True
 
@@ -19,9 +19,27 @@ api = Api(app)
 # enable CORS
 CORS(app)
 
-scanqueue = []
 
+scanqueue = []
+commandQueue = []
+instanceId = 'i-099b852775c4384f8'
 # TODO:pop id
+
+
+def execute_commands_on_linux_instances(client, commands, instance_ids):
+    """Runs commands on remote linux instances
+    :param client: a boto/boto3 ssm client
+    :param commands: a list of strings, each one a command to execute on the instances
+    :param instance_ids: a list of instance_id strings, of the instances on which to execute the command
+    :return: the response from the send_command function (check the boto3 docs for ssm client.send_command() )
+    """
+
+    resp = client.send_command(
+        DocumentName="AWS-RunShellScript",  # One of AWS' preconfigured documents
+        Parameters={'commands': commands},
+        InstanceIds=instance_ids,
+    )
+    return resp
 
 
 def scan():
@@ -85,13 +103,17 @@ class List(Resource):
 
 
 class Report(Resource):
+    ssm_client = boto3.client('ssm')
     #TODO: fill in all
+
     def post(self):
-        global scanqueue
+        global scanqueue, instanceId, commandQueue
         supportType = ['c', 'cpp', 'h', 'py', 'java', 'xml', 'css', 'js',
                        'abap', 'cls', 'cs', 'php', 'html', 'perl', 'sql', 'ruby']
         my_json = request.data.decode('utf8').replace("'", '"')
         data = json.loads(my_json)
+        author = data['author'].lower().replace(" ","_")
+        fileList = []
         if data['scanRequired']:
             for file in data['fileList']:
                 filetype = file['name'].split('.')[-1]
@@ -99,21 +121,36 @@ class Report(Resource):
                     # TODO: fix download path
                     wget.download(
                         file['url'], '/Users/huangpohan/Projects/scan_folder/')
-        # if data.imageRequired:
-        #     print('required')
-        # if data.scannerRequired:
-        #     print('scan')
-        scanqueue.append(250337)
-        Thread(target=scan).start()
+                    fileList.append(file['url'])
+            scanqueue.append(250337)
+            Thread(target=scan).start()
+        if data['imageRequired'] and data['imageName']:
+            commands = ['docker ps -q --filter "name='+author+'" | grep -q . &&docker stop '+author+';docker container prune -f;docker run -d -p 222:22 -P --name='+author+' '+data['imageName'] +
+                        '&& docker exec -i '+author+' bash < /home/ec2-user/init.sh&& docker exec '+author+' bash /home/script.sh -p '+data['imagePassword']]
+            ret = execute_commands_on_linux_instances(
+                self.ssm_client, commands, [instanceId])
+            commandQueue.append(ret['Command']['CommandId'])
+       
         ret = {'code': 20000, 'data': 'shit'}
         return jsonify(ret)
 
     def get(self):
         # reportId=request.args.get('reportId')
-        global scanqueue
-        ret = {'code': 20000, 'data': {'scanCompleted': False}}
+        global scanqueue, commandQueue
+        ret = {'code': 20000, 'data': {
+            'scanCompleted': False, 'imageBuilt': False}}
         if not scanqueue:
             ret['data']['scanCompleted'] = True
+        if commandQueue:
+            command_ret = self.ssm_client.get_command_invocation(
+                CommandId=commandQueue[-1],
+                InstanceId=instanceId
+            )
+            if command_ret['Status'] == 'Success':
+                ret['data']['imageBuilt'] = True
+                commandQueue.pop()
+        else :
+            ret['data']['imageBuilt'] = True
         return jsonify(ret)
 
 
@@ -147,13 +184,25 @@ def logout():
 # sanity check route
 @app.route('/ping', methods=['GET'])
 def ping_pong():
-    return jsonify('pong!')
+    global instanceId
+    ssm_client = boto3.client('ssm')
+    commands = ['echo "hello"']
+    instance_ids = [instanceId]
+    # ret=execute_commands_on_linux_instances(ssm_client,commands,instance_ids)
+    command_id = '92f25eff-8119-4f74-82e9-89630dbb3c27'
+    output = ssm_client.get_command_invocation(
+        CommandId=command_id,
+        InstanceId=instance_ids[0]
+    )
+    return jsonify(output)
 
 
 @app.route('/docker', methods=['GET'])
 def getImages():
+    queryString = request.args['queryString']
     response = requests.get(
-        'https://hub.docker.com/api/content/v1/products/search?source=community&q=mysq&page=1&page_size=4')
+        'https://hub.docker.com/api/content/v1/products/search?image_filter=store%2Cofficial&q='+queryString+'&page=1&page_size=4')
+    # TODO community
     json_data = response.json()
     return jsonify({'code': 20000, 'data': json_data})
 
